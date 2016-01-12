@@ -14,7 +14,7 @@ fm = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 # ch.setFormatter(fm)
 # ch.setLevel(logging.INFO)
 # logger.addHandler(ch)
-fh = logging.FileHandler('./log/evolution-{}.log'.format(time.time()))
+fh = logging.FileHandler('./logs/evolution-{}.log'.format(time.time()))
 fh.setFormatter(fm)
 fh.setLevel(logging.DEBUG)
 logger.addHandler(fh)
@@ -122,11 +122,11 @@ class GaOptimizable(object):
 
 
 class GaOptimizer(object):
-    POPULATION = 12
-    MAX_POPULATION = 100
+    POPULATION = 500
+    MAX_POPULATION = 1000
     MIN_POPULATION = 9
     MUTATION_PROBABILITY = 0.01
-    SOFT_MUTATION_PROBABILITY = 0.01
+    SOFT_MUTATION_PROBABILITY = 0.05
 
     SEND_MAIL_EVERY_X_GEN = 1
 
@@ -150,12 +150,17 @@ class GaOptimizer(object):
             self.gao_class = ga_optimizable_class
 
             for i in range(self.POPULATION - 1 ):
-                self.swarm.append(self.gao_class(self.generation))
+                self.swarm.append(self.generate_mutant())
 
-        self.dc.start()
+        self.run_optimization()
 
     def to_JSON(self):
-        return json.dumps(self, default=lambda o: o.__dict__, sort_keys=True, indent=4)
+        def _try(o):
+            try:
+                return o._dict_
+            except:
+                return str(o)
+        return json.dumps(self, default=lambda o: _try(o), sort_keys=True, indent=4)
 
     def from_JSON(self, json_dump):
         js_me = json.loads(json_dump)
@@ -190,14 +195,14 @@ class GaOptimizer(object):
 
         parents = [father, mother]
 
-        if random.uniform(0,1) > 0.5:
+        if random.uniform(0, 1) > 0.5:
             # Switch positions with P=0.5
             parents = list(reversed(parents))
 
         sibling = self.gao_class(self.generation)
         adns = [parent.get_adn() for parent in parents]
         crossing_point = random.randint(1, len(adns[0]))
-        sibling.set_adn([adns[0][:crossing_point] + adns[1][crossing_point:]])
+        sibling.set_adn(adns[0][:crossing_point] + adns[1][crossing_point:])
 
         self.mutate(sibling, mutation_probability=self.MUTATION_PROBABILITY)
 
@@ -205,12 +210,24 @@ class GaOptimizer(object):
 
         return sibling
 
+    def generate_mutant(self):
+        """
+            Generates a completely random individual
+        :return: the generated individual
+        """
+        indiv = self.gao_class(self.generation)
+
+        self.mutate(indiv, mutation_probability=1, mutation_intensity=1)
+
+        return indiv
+
+
     def mutate(self, indiv, mutation_probability=0.01, mutation_intensity=1):
         """
             Applies a mutation to an individual.
         :param indiv: Instance to mutate
         :param mutation_intensity: A number from 0 to 1 that indicates the maximum magnitude of the mutation.
-        If the number is below 1, then the mutation is applied as a change respect to the current value.
+        If the number is below 1, then the mutation is applied as an increment respect to the current value.
         :return:
         """
         lims = indiv.get_adn_limits()
@@ -222,8 +239,9 @@ class GaOptimizer(object):
             if mut_prob < mutation_probability:
                 if mutation_intensity == 1:
                     gene = random.uniform(lims[n][0], lims[n][1])
-                else
+                else:
                     gene += random.uniform(-dev[n]/2, dev[n]/2)
+                adn[n] = gene
 
         indiv.set_adn(adn)
 
@@ -242,7 +260,7 @@ class GaOptimizer(object):
                 logger.info("Evaluating generation {}".format(self.generation))
                 for individual in self.swarm:
                     individual.rating = individual.rate_fitness()
-                self.swarm = sorted(self.swarm, key=lambda individual: 1/individual.rating)
+                self.swarm = sorted(self.swarm, key=lambda indiv: 1/indiv.rating)
 
                 for individual in self.swarm:
                     if individual.rating > self.target:
@@ -253,6 +271,8 @@ class GaOptimizer(object):
                 self.opt_state = 'crossover'
             elif self.opt_state == 'crossover':
                 next_generation = []
+                #Store the fittest one
+                self.gao_class.fittest = self.swarm[0]
                 #The three best individuals continue
                 next_generation.extend(self.swarm[0:3])
                 #And the best one is cloned and soft mutated three times
@@ -260,7 +280,7 @@ class GaOptimizer(object):
                 for i in range(3):
                     sc = self.gao_class(self.generation)
                     sc.set_adn(best_adn)
-                    sc.soft_mutation()
+                    self.soft_mutation(sc)
                     next_generation.append(sc)
 
                 i = 0
@@ -309,15 +329,14 @@ class GaOptimizer(object):
                     #If there is improvement, reduce population to increase evolution speed
                     if self.POPULATION > self.MIN_POPULATION:
                         self.POPULATION -= 1
-                        logger.info("Decreasing population to {}, and soft mutation probability to {}".format(
-                            self.POPULATION,
-                            Delta.SOFT_MUTATION_PROBABILITY
-                        ))
 
                         #And decrease soft mutation probability
                         self.SOFT_MUTATION_PROBABILITY /= 1.02
 
-                Delta.SOFT_MUTATION_PROBABILITY = self.SOFT_MUTATION_PROBABILITY
+                        logger.info("Decreasing population to {}, and soft mutation probability to {}".format(
+                            self.POPULATION,
+                            self.SOFT_MUTATION_PROBABILITY
+                        ))
 
                 logger.info("GENERATION RATING: {}".format(gen_rating))
                 if last_notified_gen_rating - gen_rating < 0.1 or self.generation % self.SEND_MAIL_EVERY_X_GEN == 0:
@@ -334,7 +353,8 @@ class GaOptimizer(object):
 
 
 if __name__ == "__main__":
-    dtop = GaOptimizer()
+    from delta_tuner import Delta
+    dtop = GaOptimizer(Delta)
     dtop.run_optimization()
     # ser = serial.Serial('COM3', 250000, timeout=30)
     # while True:

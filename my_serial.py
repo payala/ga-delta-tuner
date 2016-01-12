@@ -2,6 +2,7 @@ __author__ = 'Pedro'
 
 import serial
 import datetime
+import time
 
 class MySerial(serial.Serial):
     encoding = 'utf-8'
@@ -9,16 +10,23 @@ class MySerial(serial.Serial):
 
     def __init__(self, port=None, baudrate=250000, timeout=60, logfile=None):
         if logfile is None:
-            logfile='./log/serial_{}.log'.format(datetime.datetime.now().strftime("%d%m%y_%H-%M-%S"))
+            logfile='./logs/serial_{}.log'.format(datetime.datetime.now().strftime("%d%m%y_%H-%M-%S"))
 
         self.logfile = open(logfile, 'a')
         super().__init__(port, baudrate, timeout=timeout)
 
     def newline(self):
-        if self.pc_to_3dr == True:
-            self.logfile.write('\n{} PC -> 3DR '.format(datetime.datetime.now().strftime("%d%m%y %H:%M:%S.%f")[:-3]))
-        elif self.pc_to_3dr == False:
-            self.logfile.write('\n{} PC <- 3DR '.format(datetime.datetime.now().strftime("%d%m%y %H:%M:%S.%f")[:-3]))
+        d = ""
+        if self.pc_to_3dr:
+            d = "PC -> 3DR"
+        elif not self.pc_to_3dr:
+            d = "PC <- 3DR"
+
+        self.logfile.write('\n{} (rx:{}) {} '.format(
+            datetime.datetime.now().strftime("%d%m%y %H:%M:%S.%f")[:-3],
+            self.inWaiting(),
+            d
+        ))
 
     def logline(self, data, received_size, size, pc_to_3dr):
         """
@@ -60,6 +68,7 @@ class MySerial(serial.Serial):
     def write(self, data):
         if isinstance(data, str):
             data = bytes(data, self.encoding)
+
         self.logline(data, len(data), len(data), True)
         return super().write(data)
 
@@ -71,11 +80,14 @@ class MySerial(serial.Serial):
             c = self.read(1)
             if c:
                 buf += c
-                if buf[-len(what):] == what:
+                if buf[-len(what):] == bytes(what, 'utf-8'):
                     return True
                 if max_size is not None and len(buf) >= max_size:
                     break
             else:
                 break
         return False
+
+    def wait_until_ack(self):
+        self.wait_until('ok\r\n')
 

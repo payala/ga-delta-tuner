@@ -7,6 +7,7 @@ from matplotlib import cm
 import matplotlib as mp
 from matplotlib.colors import Normalize
 from ga_optimizer import GaOptimizable
+import time
 
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -14,6 +15,48 @@ from mpl_toolkits.mplot3d import Axes3D
 class DeltaTuner(smoothie_serial.SmoothieSerial):
     sensor_offset = (0, 0, 0)#(0, -22.5, 0)
     last_bed_probing = None
+
+    def get_delta_params(self):
+        """
+            Returns the current params of the machine
+        :return: A DeltaParams instance with the parameters currently in use
+        """
+
+        self.get_machine_params()
+        dp = DeltaParams()
+        dp.angle_offset_t1 = self.tower_a_angle_corr
+        dp.angle_offset_t2 = self.tower_b_angle_corr
+        dp.angle_offset_t3 = self.tower_c_angle_corr
+        dp.radius_offset_t1 = self.tower_a_radius_corr
+        dp.radius_offset_t2 = self.tower_b_radius_corr
+        dp.radius_offset_t3 = self.tower_c_radius_corr
+        dp.radius = self.delta_radius
+        dp.rodlen_t1 = self.diagonal_rod
+        dp.rodlen_t2 = self.diagonal_rod
+        dp.rodlen_t3 = self.diagonal_rod
+        dp.x_endstop = self.x_endstop
+        dp.y_endstop = self.y_endstop
+        dp.z_endstop = self.z_endstop
+
+        return dp
+
+    def set_delta_params(self, delta_params):
+        """
+            Writes a set of params to the machine
+        :param delta_params: Instance of a DeltaParams object with the params to write
+        :return:
+        """
+        dp = delta_params
+        self.set_machine_params(
+            r=dp.radius,
+            a=dp.angle_offset_t1,
+            b=dp.angle_offset_t2,
+            c=dp.angle_offset_t3,
+            d=dp.radius_offset_t1,
+            e=dp.radius_offset_t2,
+            h=dp.radius_offset_t3,
+            l=(dp.rodlen_t1 + dp.rodlen_t2 + dp.rodlen_t3)/3
+            )
 
     def probe_bed(self, max_radius=50, num_points_per_circle=6, num_circles=2):
         """
@@ -43,12 +86,24 @@ class DeltaTuner(smoothie_serial.SmoothieSerial):
         return self.last_bed_probing
 
     def probe_with_offset(self, x, y, z=5, **kwargs):
+        """
+            Probes the bed compensating the offset between the z-probe and the nozzle
+        :param x: x offset from nozzle to z-probe
+        :param y: y offset from nozzle to z-probe
+        :param z: z offset from nozzle to z-probe
+        :param kwargs: kwargs to self.probe
+        :return:
+        """
         return self.probe(x - self.sensor_offset[0], y - self.sensor_offset[1], z - self.sensor_offset[2], **kwargs)
 
     def center_height(self):
         return self.last_bed_probing[0][2]
 
     def fit_probing_to_plane(self):
+        """
+            Probes the bed and does a least square fit of the point cloud to a plane.
+        :return: The fitted plane
+        """
         if self.last_bed_probing is None:
             self.probe_bed()
 
@@ -69,7 +124,6 @@ class DeltaTuner(smoothie_serial.SmoothieSerial):
         sol = leastsq(residuals, p0, args=(None, XYZ))[0]
         print("Error: {}".format((f_min(XYZ, sol)**2).sum()))
         return sol
-
 
     def plot_probe_result(self, fig_axis=None, normalize_to_plane=True):
         if self.last_bed_probing is None:
@@ -108,18 +162,67 @@ class DeltaTuner(smoothie_serial.SmoothieSerial):
 
 class DeltaParams(object):
     radius = None
+    radius_lims = (50, 100)
 
-    rodlen_t1 = None
-    rodlen_t2 = None
-    rodlen_t3 = None
+    rodlen_t1 = 150.85
+    rodlen_t2 = 150.85
+    rodlen_t3 = 150.85
+    rodlen_lims = (140, 160)
 
     radius_offset_t1 = None
     radius_offset_t2 = None
     radius_offset_t3 = None
+    radius_offset_lims = (-2, 2)
 
     angle_offset_t1 = None
     angle_offset_t2 = None
     angle_offset_t3 = None
+    angle_offset_lims = (-4, 4)
+
+    x_endstop = None
+    y_endstop = None
+    z_endstop = None
+    endstop_lims = (-5, 5)
+
+    ser_props = [
+        "radius",
+        #"rodlen_t1", "rodlen_t2", "rodlen_t3",
+        "radius_offset_t1", "radius_offset_t2", "radius_offset_t3",
+        "angle_offset_t1","angle_offset_t2", "angle_offset_t3",
+        "x_endstop", "y_endstop", "z_endstop"
+        ]
+
+    prop_lims = [radius_lims] + [radius_offset_lims]*3 + [angle_offset_lims]*3 + [endstop_lims]*3
+
+    def serialize(self):
+        """
+            Returns a list of the delta params
+        :return:
+        """
+        retval = []
+
+        for prop in self.ser_props:
+            retval.append(getattr(self, prop))
+
+        return retval
+
+    def deserialize(self, ser_params):
+        """
+            Populates the object with the given serialized parameters
+        :param ser_params: Input serialized parameters
+        :return:
+        """
+
+        for i, prop in enumerate(self.ser_props):
+            setattr(self, prop, ser_params[i])
+
+    def get_param_lims(self):
+        """
+            Gives the range allowed for each parameter.
+        :return: an array with tuples (min, max) representing the min and max allowable
+            values for each parameter
+        """
+        return self.prop_lims
 
 
 class DeltaSimulator(object):
@@ -156,14 +259,18 @@ class DeltaSimulator(object):
         dx3 = t3x - x
         dy3 = t3y - y
 
-        delta = [np.sqrt(delta_params.rodlen_t1 ** 2 - dx1 ** 2 - dy1 ** 2),
-                 np.sqrt(delta_params.rodlen_t2 ** 2 - dx2 ** 2 - dy2 ** 2),
-                 np.sqrt(delta_params.rodlen_t3 ** 2 - dx3 ** 2 - dy3 ** 2), ]
+        delta = [np.sqrt(delta_params.rodlen_t1 ** 2 - dx1 ** 2 - dy1 ** 2) + delta_params.x_endstop,
+                 np.sqrt(delta_params.rodlen_t2 ** 2 - dx2 ** 2 - dy2 ** 2) + delta_params.y_endstop,
+                 np.sqrt(delta_params.rodlen_t3 ** 2 - dx3 ** 2 - dy3 ** 2) + delta_params.z_endstop, ]
 
         return delta
 
     def delta2cartesian(self, delta_params, t1z, t2z, t3z):
         [t1x, t1y, t2x, t2y, t3x, t3y] = self.calculate_tower_positions(delta_params)
+
+        t1z = t1z + delta_params.x_endstop
+        t2z = t2z + delta_params.y_endstop
+        t3z = t3z + delta_params.z_endstop
 
         # From Wikipedia (Trilateration)
         p1 = np.array([t1x, t1y, t1z])
@@ -192,6 +299,23 @@ class DeltaSimulator(object):
         tri_pt = p1 + x * ex + y * ey + z * ez
 
         return tri_pt
+
+    def calc_z_errors_at_pos(self, pos, probe_pos=(0,0)):
+        """
+            Calculates the z-errors at a given set of positions
+        :param pos: list of [x, y, z] lists with given x and y positions for probings. z is
+        ignored by this method.
+        :param probe_pos: optional tuple to indicate the offset of the probe and compensate for it
+        :return: list of [x, y, z] lists filled with the calculated z parameter
+        """
+        points = []
+        for p in pos:
+            points.append([p[0], p[1], 0])
+        for n, p in enumerate(points):
+            t = self.cartesian2delta(self.firmware_params, p[0], p[1], 0)
+            r = self.delta2cartesian(self.real_params, t[0], t[1], t[2])
+            points[n][2] = float(np.real(r[2]))
+        return points
 
     def calc_z_errors(self):
         bed_diam = 117
@@ -227,26 +351,102 @@ class DeltaSimulator(object):
         fig_axis.set_ylabel('Y axis')
         fig_axis.set_zlabel('Z axis')
 
+
 class Delta(GaOptimizable):
+    tuner = None
+    fittest = None
+
+    real_delta = []
 
     def __init__(self, generation):
         super(Delta, self).__init__(generation)
+        self.delta_params = DeltaParams()
+        if Delta.tuner is None:
+            Delta.tuner = DeltaTuner('COM10')
+        try:
+            Delta.real_delta[self.get_reference_delta()]
+        except IndexError:
+
+            try:
+                ref_params = Delta.fittest.delta_params
+            except AttributeError:
+                ref_params = Delta.tuner.get_delta_params()
+
+            Delta.tuner.set_delta_params(ref_params)
+            time.sleep(1)
+            probings = Delta.tuner.probe_bed()
+
+            zcount = 0
+            zsum = 0
+            for probing in probings:
+                zcount += 1
+                zsum += probing[2]
+
+            zsum /= zcount
+
+            for i, probing in enumerate(probings):
+                probings[i][2] -= zsum
+
+            Delta.real_delta.append({
+                'params': ref_params,
+                'probing': probings
+            })
+        self.sim = DeltaSimulator(Delta.real_delta[self.get_reference_delta()]['params'], self.delta_params)
+
+    def get_reference_delta(self):
+        #return self.generation
+        return 0
 
     def get_adn_limits(self):
-        raise NotImplementedError()
+        return self.delta_params.get_param_lims()
 
     def get_adn(self):
-        raise NotImplementedError()
+        return self.delta_params.serialize()
 
     def set_adn(self, adn):
-        raise NotImplementedError()
+        self.delta_params.deserialize(adn)
+        self.sim.real_params = self.delta_params
 
     def rate_fitness(self):
-        raise NotImplementedError()
+        """
+            Rates the fitness of the delta. The method used to rate the fitness is to calculate the
+            least squares error between the simulated parameters and the class' real_delta probing
+            results of the current generation. In this way, what is finally found is the real
+            physical parameters of the machine.
+        :return:
+        """
+
+        probings = Delta.real_delta[self.get_reference_delta()]['probing']
+        sim_probings = self.sim.calc_z_errors_at_pos(probings)
+
+        error = 0
+        for i, probing in enumerate(probings):
+            error += (probings[i][2] - sim_probings[i][2])**2
+
+        return 1/error
 
     def from_json(cls, js_data):
         raise NotImplementedError()
 
+    def __repr__(self):
+        return "Delta {} [x:{:.2f} y:{:.2f} z:{:.2f} A_ang:{:.2f} B_ang:{:.2f} C_ang:{:.2f} " \
+               "A_rad:{:.2f} B_rad:{:.2f} C_rad:{:.2f} dt_rad:{:.2f} " \
+               "A_rod:{:.2f} B_rod:{:.2f} C_rod:{:.2f} ".format(
+            self.name,
+            self.delta_params.x_endstop,
+            self.delta_params.y_endstop,
+            self.delta_params.z_endstop,
+            self.delta_params.angle_offset_t1,
+            self.delta_params.angle_offset_t2,
+            self.delta_params.angle_offset_t3,
+            self.delta_params.radius_offset_t1,
+            self.delta_params.radius_offset_t2,
+            self.delta_params.radius_offset_t3,
+            self.delta_params.radius,
+            self.delta_params.rodlen_t1,
+            self.delta_params.rodlen_t2,
+            self.delta_params.rodlen_t3,
+            )
 
 
 if __name__ == "__main__":

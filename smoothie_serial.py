@@ -44,6 +44,7 @@ class SmoothieSerial(my_serial.MySerial):
     def get_machine_params(self):
         data_found = 0
         self.write(b'M503\n')
+        time.sleep(0.5)
         while self.inWaiting():
             ln = self.readline().decode()
             if ln is None:
@@ -79,24 +80,47 @@ class SmoothieSerial(my_serial.MySerial):
                     self.z_height = float(ln.split('Z')[1].split(' ')[0])
                 data_found += 1
 
+    def set_machine_params(self, **kwargs):
+        m666_ln = "M666"
+        m665_ln = "M665"
 
+        for key in kwargs:
+            if key.upper() in ['X', 'Y', 'Z']:
+                m666_ln += " " + key.upper()
+                m666_ln += str(float(kwargs[key]))
+
+            if key.upper() in ['A', 'B', 'C', 'D', 'E', 'H', 'R', 'L', 'Z']:
+                m665_ln += " " + key.upper()
+                m665_ln += str(float(kwargs[key]))
+
+        m666_ln += "\n"
+        m665_ln += "\n"
+
+        self.write(bytes(m666_ln, 'utf-8'))
+        self.wait_until_ack()
+        self.write(bytes(m665_ln, 'utf-8'))
+        self.wait_until_ack()
 
     def home(self):
         self.write('G28\n')
+        self.wait_until_ack()
 
     def go(self, x, y, z, f=None):
         if f is None:
             f = self.FAST_MOVE_FEEDRATE
         self.write('G1 X{} Y{} Z{} F{}\n'.format(x, y, z, f))
+        self.wait_until_ack()
 
     def probe(self, x, y, z=10, home=True, timeout=10):
         if home:
             self.home()
+
         self.flushInput()
         self.go(x, y, z)
         self.write('G30\n')
         ln = self.read_until('Z:')
-        z_val = float(ln.split('Z:')[1].split(' ')[0])
+        z_val = float(ln.split('Z:')[1].strip().split(' ')[0])
+        self.wait_until_ack()
         return z_val
 
 if __name__ == '__main__':
